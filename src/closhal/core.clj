@@ -5,7 +5,9 @@
             [clojure.string :as st])
   (:use [clojure.java.io :refer :all])
   (:import (clojure.lang Keyword)
-           (java.util Collection)))
+           (java.util Collection)
+           (java.lang ProcessBuilder)
+           (java.util.regex Pattern)))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -37,7 +39,41 @@
   ([pad coll]
    (partition 3 1 (concat [pad] coll [pad]))))
 
+(defn map-str [fn coll]
+  (st/join (map fn coll)))
 
+(defn map-if [pred fn coll]
+  (map #(if (pred %)
+          (fn %)
+          %) coll))
+
+(defn map-if-str [pred fn coll]
+  (st/join (map-if pred fn coll)))
+
+(defn replace-adv [^String str reg chg ^String to]
+  (if-let [fnd (re-find reg str)]
+    (if-let [b (re-find (re-pattern chg) fnd)]
+      (st/replace str
+                  reg
+                  (st/replace fnd
+                              chg
+                              to))
+      str)
+    str))
+
+(defn replace-adv-many [str reg-list]
+  (if (= 0 (count reg-list))
+    str
+    (replace-adv-many
+      (apply replace-adv str (first reg-list))
+      (rest reg-list))
+    ))
+(defn replace-many [str reg-list]
+  (if (= 0 (count reg-list))
+    str
+    (replace-many
+      (apply st/replace str (first reg-list))
+      (rest reg-list))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; TABLES
@@ -80,18 +116,22 @@
 (s/def ::char char?)
 
 (defn offset->pos [^Number x]
-  {:pre [(#{0 1 2 3} x)]}
+  {:pre [(or (nil? x) (#{0 1 2 3} x))]}
   (let [code->pos-map (zipmap (vals poses) (keys poses))]
     (code->pos-map x)
     ))
 
 ;; SChar type, store char and pos of it in the word
 (defrecord SChar [^Character char ^Keyword pos])
-(defn schar [^Character c ^Keyword p]                       ;; constructor
-  {:pre [(s/valid? ::char c)
-         #_((set cyr-liters) c)
-         (or (nil? p) (s/valid? ::poses p))]}
-  (->SChar c p))
+(defn schar
+  ([^Character c ^Keyword p]
+   {:pre [(s/valid? ::char c)
+          #_((set cyr-liters) c)
+          (or (nil? p) (s/valid? ::poses p))]}
+   (->SChar c p))
+  ([^Character c]
+   (schar c nil)))
+
 (s/def ::schar #(instance? SChar %))                        ;; spec for check
 
 ;; Add meta type of SStr to seq of SChars, can attempt one seq or elements, do not mix
@@ -115,8 +155,11 @@
 (defn lit->code [^Character l]
   (lit->code-map l))
 
-(defn code->schar [^Character c ^Keyword p]
-  (schar (code->lit c) p))
+(defn code->schar
+  ([^Number c ^Keyword p]
+   (schar (code->lit c) p))
+  ([^Number c]
+   (code->schar c nil)))
 
 (defn schar->code [^SChar sc]
   (+ (if-let [code (lit->code (:char sc))]
@@ -159,21 +202,61 @@
                 (conj coll (f a))))
             (seq str))))
 
-(defn up-but-a [str]
-  (st/join (map #(if (#{\е \и \о \у} %)
-                   (st/upper-case %)
-                   %)
-                str)))
-(defn spacing [str]
-  (st/join (map #(if (= \space %)
-                   "  "
-                   %)
-                str)))
+
+(defn- up-vols [str]
+  (map-if-str #{\а \е \и \о \у}
+              st/upper-case
+              str))
+
+(defn- spacing [str]
+  (map-if-str #{\space}
+              (fn [_] "  ")
+              str))
+
+
+(defn replacing-first [str]
+  (replace-many str [
+                     ["ы" "и"]
+                     ["э" "е"]
+                     ["ё" "ьо"]
+                     ["ю" "ьу"]
+                     ["я" "ьа"]
+                     ["й" "ьи"]
+                     ["дж" "g"]
+                     ["дз" "j"]
+                     ["кс" "v"]
+                     ["пс" "w"]
+                     ["д.ж" "дж"]
+                     ["д.з" "дз"]
+                     ["к.с" "кс"]
+                     ["п.с" "пс"]
+                     ["ъ"   "-"]
+                     ]))
+
+(defn replacing-second [str]
+  (st/trim (replace-adv-many (st/join [" " str " "]) [
+                                                      [#"\S-\S" "-" " - "]
+                                                      [#"\sА" "А" "а"]
+                                                      [#"А\s" "А" "а"]
+                                                      [#"\sА\s" "А" "а"]
+                                                      [#"\s/А" "/" ""]
+                                                      [#"/а\s" "/а" "А"]
+                                                      [#"\s/А\s" "/" ""]
+                                                      [#" - " " - " "-"]
+                                                      [#"/А-" "/А-" "а-"]
+                                                      [#"-/А" "-/А" "-а"]
+                                                      [#"\S-А" "А" "/а"]
+                                                      [#"\S-а" "а" "А"]
+                                                      [#"\S-/а" "/а" "а"]
+                                                      [#"/а-\S" "/а" "А"]
+                                                      ])))
 
 (defn pre-work [^String str]
   (-> str
       st/lower-case
-      up-but-a
+      replacing-first
+      up-vols
+      replacing-second
       spacing))
 
 ;; TODO Правильные позиции и обработка гласных, экранов, спец обозначений в кириллице
