@@ -81,14 +81,14 @@
 ;; code of table UTF. 0x2800 -- Braille
 (def code-table 0x2800)
 
-(def liters-codes (range 0x0020 0x0095 4))
+(def liters-codes (range 0x0020 0x0099 4))
 (def cyr-liters (list \а \б \т \с
                       \л \в \д \з
                       \р \х \м \г
                       \н \п \к \ш
                       \ф \ч \ж \ц
                       \v \w \g \j
-                      \А \Е \И \О \У))
+                      \А \Е \И \О \У \ь))
 
 ;; TODO Специальынй символы и препинание, а так же гласные
 
@@ -137,7 +137,7 @@
 ;; Add meta type of SStr to seq of SChars, can attempt one seq or elements, do not mix
 (defn seq->sstr
   ([^Collection coll]
-   {:pre [(s/valid? (s/coll-of ::schar) coll)]}
+   #_{:pre [(s/valid? (s/coll-of ::schar) coll)]}
    (with-meta coll {:type :SStr}))
   ([^SChar x & xs]
    (seq->sstr (apply list x xs))))
@@ -191,16 +191,6 @@
 (defn echar->lit [^Character ech]
   (:char (echar->schar ech)))
 
-(defn str->bad-sstr [str]
-  (seq->sstr
-    (reduce (fn [coll a]
-              (let [f #(schar % :s)
-                    coll (if (char? coll)
-                           [(f coll)]
-                           coll)
-                    ]
-                (conj coll (f a))))
-            (seq str))))
 
 
 (defn- up-vols [str]
@@ -230,25 +220,26 @@
                      ["д.з" "дз"]
                      ["к.с" "кс"]
                      ["п.с" "пс"]
-                     ["ъ"   "-"]
+                     ["ъ" "-"]
                      ]))
 
 (defn replacing-second [str]
   (st/trim (replace-adv-many (st/join [" " str " "]) [
-                                                      [#"\S-\S" "-" " - "]
-                                                      [#"\sА" "А" "а"]
-                                                      [#"А\s" "А" "а"]
-                                                      [#"\sА\s" "А" "а"]
-                                                      [#"\s/А" "/" ""]
-                                                      [#"/а\s" "/а" "А"]
-                                                      [#"\s/А\s" "/" ""]
-                                                      [#" - " " - " "-"]
-                                                      [#"/А-" "/А-" "а-"]
-                                                      [#"-/А" "-/А" "-а"]
-                                                      [#"\S-А" "А" "/а"]
-                                                      [#"\S-а" "а" "А"]
-                                                      [#"\S-/а" "/а" "а"]
-                                                      [#"/а-\S" "/а" "А"]
+                                                      [#"\S-\S" "-" " - "] ; пробелы рядом с дефисом для обработки А как на концах слова
+                                                      [#"\sА" "А" "а"] ; А в начале слова, после пробела, меняем на аль
+                                                      [#"А\s" "А" "а"] ; Тоже в конце слова, меняем А на аль
+                                                      [#"\sА\s" "А" "а"] ; А как отдельное слово тоже на аль
+                                                      [#"\s/А" "/" ""] ; При экране / перед А в начале слова просто убираем экран, А остаётся А, на аль не меняем
+                                                      [#"/а\s" "/а" "А"] ; Меняем аль с экраном в конце слова на А, т.к. выше А заменилась на аль в конце слова
+                                                      [#"\s/А\s" "/А" "А"] ; А остаётся А при записи с экраном / в отдельной позиции
+                                                      [#" - " " - " "-"] ; Убираем пробелы слева и справа от дефиса
+                                                      ;[#"\s-А" "-А" "-/а"] ; Пробел дефис А     -> экран / аль, чтобы её не съело в следующем
+                                                      ;[#"\s-а" "-а" "-А"]  ; Пробел дефис аль   -> А
+                                                      ;[#"\s-/а" "/а" "а"]  ; Убираем экран
+                                                      [#"\s-/А" "/А" "а"]
+                                                      [#"\S-а" "-а" "-/А"] ; Непробел дефис аль -> экран / А
+                                                      [#"\S-А" "-А" "-а"] ; Непробел дефис А   -> аль
+                                                      [#"\S-/А" "/А" "А"] ; Убираем экран
                                                       ])))
 
 (defn pre-work [^String str]
@@ -260,6 +251,110 @@
       spacing))
 
 ;; TODO Правильные позиции и обработка гласных, экранов, спец обозначений в кириллице
+
+
+(defn str->bad-sstr [^String str]
+  (seq->sstr
+    (reduce (fn [coll a]
+              (let [f #(schar % :s)
+                    coll (if (char? coll)
+                           [(f coll)]
+                           coll)
+                    ]
+                (conj coll (f a))))
+            (seq (pre-work str)))))
+
+(defn enpos [ps ch ft]
+  (cond
+    (not ((set cyr-liters) (:char ch))
+         ) (chpos ch nil)
+
+    (or (= \space (:char (first ft)))
+        (= \- (:char (first ft)))
+        (empty? ft)
+        ) (chpos ch :e)
+    :else (chpos ch :f)
+    )
+  )
+
+(defn enpose [sstr]
+  (seq->sstr
+    (loop [ps []
+           ch (first sstr)
+           ft (rest sstr)]
+      (if (nil? ch)
+        ps
+        (recur (conj ps (enpos ps ch ft))
+               (first ft)
+               (rest ft)))
+      )
+    )
+  )
+
+(defn expos [ps ch ft]
+  (cond
+    (and
+      (or (and (= \- (:char (last ps)))
+               (or (= \space (:char (second (reverse ps))))
+                   (nil? (:pos (second (reverse ps))))))
+          (and (= \- (:char (first ft)))
+               (or (= \space (:char (second ft)))
+                   (nil? (:pos (second ft))))))
+
+      ) (chpos ch :m)
+
+    (and (= \ь (:char (last ps)))
+         (:pos ch)
+         ) (chpos ch (:pos (last ps)))
+
+    (and (nil? (:pos (first ft)))
+         (= :m (:pos (last ps)))
+         ) (chpos ch :e)
+
+    (and (or (= :f (:pos (last ps)))
+             (= :m (:pos (last ps))))
+         (= :f (:pos ch))
+         (not (nil? (:pos (first ft))))
+         ) (chpos ch :m)
+
+    (and (or (nil? (:pos (last ps)))
+             (= :e (:pos (last ps))))
+         (or (= \- (:char (first ft)))
+             (= \space (:char (first ft))))
+         (:pos ch)
+         ) (chpos ch :s)
+
+    :else ch
+    )
+  )
+
+(defn expose [sstr]
+  (seq->sstr
+    (loop [ps []
+           ch (first sstr)
+           ft (rest sstr)]
+      (if (nil? ch)
+        ps
+        (recur (conj ps (expos ps ch ft))
+               (first ft)
+               (rest ft)))
+      )
+    )
+  )
+
+(defn remex [sstr]
+  (seq->sstr
+    (map #(if (= \. (:char %))
+            (schar \̥  (:pos nil))
+            %)
+      (filter (fn [ch] (not= \- (:char ch))) sstr))
+    ))
+
+(defn pose [sstr]
+  ((comp remex expose enpose) sstr))
+
+(defn str->sstr [str]
+  (seq->sstr (pose (str->bad-sstr str))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; PRINTES
@@ -310,7 +405,7 @@
     (pp/pprint {:str (reduce (fn [a b] (.concat a b))
                              (for [s x] (str (:char s))))
                 :pos (reduce (fn [a b] (.concat a b))
-                             (for [s x] (key->str (:pos s))))
+                             (for [s x] (key->str (or (:pos s) :n))))
                 }
                w)))
 
