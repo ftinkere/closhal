@@ -33,23 +33,32 @@
    (apply wr w xs)))
 
 
+;; [:a :b :c :d :e] -> '('(nil :a :b) '(:a :b :c) '(:b :c :d) '(:c :d :e) '(:d :e nil))
 (defn window
   ([coll]
    (window nil coll))
   ([pad coll]
    (partition 3 1 (concat [pad] coll [pad]))))
 
+
+;;Применяет map посимвольно к строке и возврощает строку
 (defn map-str [fn coll]
   (st/join (map fn coll)))
 
+
+;; Применяет map к coll с функцией fn, которая применяется при условии выполнения функции pred к элементу
 (defn map-if [pred fn coll]
   (map #(if (pred %)
           (fn %)
           %) coll))
 
+
+;; Применяет map-if к строке посимвольно
 (defn map-if-str [pred fn coll]
   (st/join (map-if pred fn coll)))
 
+
+;; Заменяет в строке str в подстроке reg элемент chg на to
 (defn replace-adv [^String str reg chg ^String to]
   (if-let [fnd (re-find reg str)]
     (if-let [b (re-find (re-pattern chg) fnd)]
@@ -61,6 +70,7 @@
       str)
     str))
 
+;; Применяет последовательно список аргументов reg-list к replace-adv к исходной строке str. Задаёт список правил замены
 (defn replace-adv-many [str reg-list]
   (if (= 0 (count reg-list))
     str
@@ -68,6 +78,8 @@
       (apply replace-adv str (first reg-list))
       (rest reg-list))
     ))
+
+;; Применяет последовательно список аргументов reg-list к clojure.string/replace к исодной строке str
 (defn replace-many [str reg-list]
   (if (= 0 (count reg-list))
     str
@@ -79,23 +91,27 @@
 ;; TABLES
 
 ;; code of table UTF. 0x2800 -- Braille
+;; Код добавки. Требуется для замены таблицы Брайля на таблицу личного пользования в случае чего
 (def code-table 0x2800)
 
-(def liters-codes (range 0x0020 0x0099 4))
+
+;; Список кодов отдельных символов
+(def liters-codes (range 0x0020 0x009D 4))
+;; Список буквенных символов
 (def cyr-liters (list \а \б \т \с
                       \л \в \д \з
                       \р \х \м \г
                       \н \п \к \ш
                       \ф \ч \ж \ц
                       \v \w \g \j
-                      \А \Е \И \О \У \ь))
+                      \А \Е \И \О \У \ь \:))
 
-;; TODO Специальынй символы и препинание, а так же гласные
-
+;; Ассоциативный массив, где ключи это код, а значения это соответствующий буквенный символ. Отсортирован по кодам
 (def code->lit-map (->> (zipmap liters-codes cyr-liters)
                         vec
                         flatten
                         (apply sorted-map)))
+;; Ассоциативный массив, где ключи это буквенные символы, а значения соответствующие им коды. Отсортирован по кодам
 (def lit->code-map (let [mp (zipmap cyr-liters liters-codes)]
                      (->> mp
                           vec
@@ -110,19 +126,23 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; TYPES
 
-;; all possible positions of schar
+;; Мапа, ключи это кейворды для позиции schar, а значения это прибавка к коду.
 (def poses {:s 0 :f 1 :m 2 :e 3})
+
+;;объявление типов в core.spec
 (s/def ::poses (set (keys poses)))
 (s/def ::char char?)
 
+;; Получение кейворда poses по прибавке к коду
 (defn offset->pos [^Number x]
   {:pre [(or (nil? x) (#{0 1 2 3} x))]}
   (let [code->pos-map (zipmap (vals poses) (keys poses))]
     (code->pos-map x)
     ))
 
-;; SChar type, store char and pos of it in the word
+;; Тип SChar для хранения символа и позиции. Позиции могут быть nil и ключи из poses
 (defrecord SChar [^Character char ^Keyword pos])
+;; Конструктор типа. Проверяет входные значения
 (defn schar
   ([^Character c ^Keyword p]
    {:pre [(s/valid? ::char c)
@@ -132,9 +152,10 @@
   ([^Character c]
    (schar c nil)))
 
-(s/def ::schar #(instance? SChar %))                        ;; spec for check
+;; core.spec объявление для проверки на SChar
+(s/def ::schar #(instance? SChar %))
 
-;; Add meta type of SStr to seq of SChars, can attempt one seq or elements, do not mix
+;; Костыль, чтобы список из элементов SChar обрабатывался отдельно за счёт мета данных типа
 (defn seq->sstr
   ([^Collection coll]
    #_{:pre [(s/valid? (s/coll-of ::schar) coll)]}
@@ -142,25 +163,27 @@
   ([^SChar x & xs]
    (seq->sstr (apply list x xs))))
 
-;; КОСТЫЛЬ ДЛЯ PPRINT!
-(defrecord SStr [sstr])
-
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Transactions
 
+;; Получает по коду соответствующий буквенный символ TODO: можно добавить поддержку добавок позиции
 (defn code->lit [^Number c]
   (code->lit-map c))
 
+;; Получает код буквенного символа из таблицы. Не поддерживает другие символы.
+;; Использовать функцию code->schar в норме
 (defn lit->code [^Character l]
   (lit->code-map l))
 
+;; По полученному коду буквенного символа получает schar.
+;; Принимает только коды отдельных символов и может принимать кейворд позиции, иначе будет nil
 (defn code->schar
   ([^Number c ^Keyword p]
    (schar (code->lit c) p))
   ([^Number c]
    (code->schar c nil)))
 
+;; Получает код по schar. Код содержит прибавку позиции, если позиция nil, то прибавка 0
 (defn schar->code [^SChar sc]
   (+ (if-let [code (lit->code (:char sc))]
        code
@@ -168,42 +191,49 @@
      (or (poses (:pos sc))
          0)))
 
+;; Получает символ по char, который идёт на вывод. Если не является буквеным символом, то
+;; выводится сам изначальный символ. Иначе символ с прибавкой таблицы. По умолчанию таблица Брайля.
 (defn schar->echar [^SChar sc]
   (char (let [code (schar->code sc)
               offset (if (nil? (lit->code (:char sc)))
                        0 code-table)]
           (+ offset (schar->code sc)))))
 
-(defn char->echar [^Character c]
+;; Хз зачем, получение выводимого символа по буквенному символу из таблицы. Другие выдадут nil
+(defn lit->echar [^Character c]
   (char (+ code-table (lit->code c))))
 
+;; Возвращает schar с тем же символом, но новой позицией
 (defn chpos [^Character sc ^Keyword p]
   {:pre  [(or (nil? p) (poses p))]
    :post [(s/valid? ::schar %)]}
   (assoc sc :pos p))
 
+;; Попытка получить по конечному символу schar. Непредсказуема для символов вне буквенных символов в таблице
 (defn echar->schar [^Character ech]
   (let [code (int ech)
         pos-offset (i code mod 4)
         ch (i code - pos-offset code-table)]
     (schar (code->lit ch) (offset->pos pos-offset))))
 
+;; Отбрасывает позицию schar, который вернёт echar->schar и возвращает только символ
 (defn echar->lit [^Character ech]
   (:char (echar->schar ech)))
 
 
-
+;; Делает все гласные в строке большими
 (defn- up-vols [str]
   (map-if-str #{\а \е \и \о \у}
               st/upper-case
               str))
 
+;; Удваивает пробелы. Нужно для визуального различения слов в конечной строке
 (defn- spacing [str]
   (map-if-str #{\space}
               (fn [_] "  ")
               str))
 
-
+;; По правилам [что на-что] меняет все вхождения в строке
 (defn replacing-first [str]
   (replace-many str [
                      ["ы" "и"]
@@ -223,6 +253,7 @@
                      ["ъ" "-"]
                      ]))
 
+;; По правилам [где что на-что] меняет все вхождения в строке.
 (defn replacing-second [str]
   (st/trim (replace-adv-many (st/join [" " str " "]) [
                                                       [#"\S-\S" "-" " - "] ; пробелы рядом с дефисом для обработки А как на концах слова
@@ -242,6 +273,7 @@
                                                       [#"\S-/А" "/А" "А"] ; Убираем экран
                                                       ])))
 
+;; Обработка базовой строки в вид, пригодный для обработки
 (defn pre-work [^String str]
   (-> str
       st/lower-case
@@ -250,9 +282,10 @@
       replacing-second
       spacing))
 
-;; TODO Правильные позиции и обработка гласных, экранов, спец обозначений в кириллице
+;; TODO: поддержка \: для длинных звуков
 
 
+;; Преобразует строку в sstr, массив schar с мета данными типа, все позиции равны :s
 (defn str->bad-sstr [^String str]
   (seq->sstr
     (reduce (fn [coll a]
@@ -264,6 +297,9 @@
                 (conj coll (f a))))
             (seq (pre-work str)))))
 
+;; Принимает массив предшествующих символов, символ schar, и массив следующих за ним символов
+;; Возвращает необходимую позицию для данного символа
+;; Делает первый прогон для обработки в минимальный режим, проставляет только nil, :f и :e
 (defn enpos [ps ch ft]
   (cond
     (not ((set cyr-liters) (:char ch))
@@ -277,6 +313,7 @@
     )
   )
 
+;; применяет enpos к каждому символу
 (defn enpose [sstr]
   (seq->sstr
     (loop [ps []
@@ -291,6 +328,9 @@
     )
   )
 
+;; Принимает массив предшествующих символов, символ schar, и массив следующих за ним символов
+;; Возвращает необходимую позицию для данного символа
+;; Делает второй прогон. Проставляет позиции :m и :s на основе минимальной конфигурации на основе :f, :e, nil
 (defn expos [ps ch ft]
   (cond
     (and
@@ -328,6 +368,7 @@
     )
   )
 
+;; Применяет expos к каждому символу
 (defn expose [sstr]
   (seq->sstr
     (loop [ps []
@@ -342,23 +383,28 @@
     )
   )
 
+;; Делает пост обработку по символам.
 (defn remex [sstr]
   (seq->sstr
-    (map #(if (= \. (:char %))
-            (schar \̥  (:pos nil))
-            %)
-      (filter (fn [ch] (not= \- (:char ch))) sstr))
+    (map #(cond
+            (= \. (:char %)                                 ; Замена точки на другой символ
+               ) (schar (char 0x1CC3) nil)                  ; (char 0x166E) ᙮ / (char 0x1CC3) ᳃
+            :else %)
+      (filter (fn [ch] (not= \- (:char ch))) sstr))         ;; Убрать все вхождения символа \-
     ))
 
+;; применяет последовательно enpose, expose и remex к sstr
 (defn pose [sstr]
   ((comp remex expose enpose) sstr))
 
+;; Преобразует базовую строку в sstr
 (defn str->sstr [str]
   (seq->sstr (pose (str->bad-sstr str))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; PRINTES
 
+;; переменная для корректировки вывода символов schar в виде читаемом и виде финальном
 (def ^:dynamic
   *print-end* false)
 
@@ -409,31 +455,10 @@
                 }
                w)))
 
+;; Печатает с переменной *print-end*
 (defn printe [x]
   (binding [*print-end* true]
     (print x)))
-
-
-
-
-;; DO NOT USE
-(defmethod pp/simple-dispatch SStr
-  ([x]
-   (binding [*print-end* true]
-     (print-method (seq->sstr (:sstr x)) *out*)))
-  ([x w]
-   (binding [*print-end* true]
-     (print-method (seq->sstr (:sstr x)) w))))
-
-#_(apply wr
-         w
-         ":str "
-         (for [s x]
-           (str (:char s))))
-#_(apply wr w "\n:pos "
-         (for [s x]
-           (key->str (:pos s))))
-;)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; BASES
@@ -443,6 +468,9 @@
 (def y (schar \п :f))
 (def xxx (seq->sstr [x x y x y y]))
 
-(defn -main []
-
+(defn -main [& args]
+  (doseq [arg args]
+    (let [sstr (str->sstr arg)]
+      (printe sstr)
+      (print  sstr)))
   )
