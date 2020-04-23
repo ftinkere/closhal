@@ -343,8 +343,22 @@
 
       ) (chpos ch :m)
 
-    (and (= \ь (:char (last ps)))
+    ;(and (or (= \ь (:char ch))
+    ;         (= \: (:char ch)))
+    ;     (= :e (:pos (first ft)))
+    ;     ) (chpos ch :e)
+
+    ;(and (or (= \ь (:char (first ft)))
+    ;         (= \: (:char (first ft))))
+    ;     (or (= :s (:pos (second ft)))
+    ;         (nil? (:pos (second ft))))
+    ;     ) (chpos ch (:pos (first ft)))
+
+    (and (or (= \ь (:char (last ps)))
+             (= \: (:char (last ps))))
          (:pos ch)
+         (not (nil? (:pos (first ft))))
+         (not= :s (:pos (first ft)))
          ) (chpos ch (:pos (last ps)))
 
     (and (nil? (:pos (first ft)))
@@ -360,7 +374,7 @@
     (and (or (nil? (:pos (last ps)))
              (= :e (:pos (last ps))))
          (or (= \- (:char (first ft)))
-             (= \space (:char (first ft))))
+             (nil? (:pos (first ft))))
          (:pos ch)
          ) (chpos ch :s)
 
@@ -390,7 +404,7 @@
             (= \. (:char %)                                 ; Замена точки на другой символ
                ) (schar (char 0x1CC3) nil)                  ; (char 0x166E) ᙮ / (char 0x1CC3) ᳃
             :else %)
-      (filter (fn [ch] (not= \- (:char ch))) sstr))         ;; Убрать все вхождения символа \-
+         (filter (fn [ch] (not= \- (:char ch))) sstr))      ;; Убрать все вхождения символа \-
     ))
 
 ;; применяет последовательно enpose, expose и remex к sstr
@@ -472,5 +486,5 @@
   (doseq [arg args]
     (let [sstr (str->sstr arg)]
       (printe sstr)
-      (print  sstr)))
+      (print sstr)))
   )
