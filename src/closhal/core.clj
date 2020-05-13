@@ -4,10 +4,11 @@
             [clojure.spec.alpha :as s]
             [clojure.string :as st])
   (:use [clojure.java.io :refer :all])
-  (:import (clojure.lang Keyword)
+  (:import (clojure.lang Keyword Var)
            (java.util Collection)
            (java.lang ProcessBuilder)
-           (java.util.regex Pattern)))
+           (java.util.regex Pattern))
+  (:gen-class))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -87,10 +88,19 @@
       (apply st/replace str (first reg-list))
       (rest reg-list))))
 
+
+(defn st-first [str]
+  (if (i (.length str) > 0)
+    (first (.substring str 0 1))
+    nil))
+(defn st-rest [str]
+  (if (i (.length str) > 0)
+    (.substring str 1)
+    ""))
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; TABLES
 
-;; code of table UTF. 0x2800 -- Braille
+;; code of table UTF. 0x2800 (0x87f0)-- Braille
 ;; Код добавки. Требуется для замены таблицы Брайля на таблицу личного пользования в случае чего
 (def code-table 0x2800)
 
@@ -103,8 +113,9 @@
                       \р \х \м \г
                       \н \п \к \ш
                       \ф \ч \ж \ц
-                      \v \w \g \j
-                      \А \Е \И \О \У \ь \:))
+                      \q \w \g \j
+                      \А \Е \И \О \У \Й \ь \:))
+(def lits (set (take 30 cyr-liters)))
 
 ;; Ассоциативный массив, где ключи это код, а значения это соответствующий буквенный символ. Отсортирован по кодам
 (def code->lit-map (->> (zipmap liters-codes cyr-liters)
@@ -159,7 +170,7 @@
 (defn seq->sstr
   ([^Collection coll]
    #_{:pre [(s/valid? (s/coll-of ::schar) coll)]}
-   (with-meta coll {:type :SStr}))
+   (with-meta (filter #(not (nil? %)) coll) {:type :SStr}))
   ([^SChar x & xs]
    (seq->sstr (apply list x xs))))
 
@@ -220,10 +231,27 @@
 (defn echar->lit [^Character ech]
   (:char (echar->schar ech)))
 
+;; Декодирует
+(defn estr->str [^String estr]
+  (reduce (fn [coll a]
+            (let [cd (int a)
+                  depos (i cd mod 4)
+                  f (if (and (i cd > 0x2800)
+                             (i cd < 0x2900))
+                      (echar->lit a)
+                      a)
+                  coll (if (char? coll) [f] coll)
+                  ]
+              (conj coll f)
+              )
+            )
+          estr)
+  )
+
 
 ;; Делает все гласные в строке большими
 (defn- up-vols [str]
-  (map-if-str #{\а \е \и \о \у}
+  (map-if-str #{#_\а \е \и \о \у \й}
               st/upper-case
               str))
 
@@ -241,23 +269,24 @@
                      ["ё" "ьо"]
                      ["ю" "ьу"]
                      ["я" "ьа"]
-                     ["й" "иь"]
+                     #_["й" "иь"]
                      ["щ" "шь"]
                      ["дж" "g"]
                      ["дз" "j"]
-                     ["кс" "v"]
+                     ["кс" "q"]
                      ["пс" "w"]
                      ["д.ж" "дж"]
                      ["д.з" "дз"]
                      ["к.с" "кс"]
                      ["п.с" "пс"]
                      ["ъ" "-"]
+                     ["его" "агр"]
                      ]))
 
 ;; По правилам [где что на-что] меняет все вхождения в строке.
 (defn replacing-second [str]
   (st/trim (replace-adv-many (st/join [" " str " "]) [
-                                                      [#"\S-\S" "-" " - "] ; пробелы рядом с дефисом для обработки А как на концах слова
+                                                      [#"-" "-" " - "] ; пробелы рядом с дефисом для обработки А как на концах слова
                                                       [#"\sА" "А" "а"] ; А в начале слова, после пробела, меняем на аль
                                                       [#"А\s" "А" "а"] ; Тоже в конце слова, меняем А на аль
                                                       [#"\sА\s" "А" "а"] ; А как отдельное слово тоже на аль
@@ -274,29 +303,55 @@
                                                       [#"\S-/А" "/А" "А"] ; Убираем экран
                                                       ])))
 
+
 ;; Обработка базовой строки в вид, пригодный для обработки
 (defn pre-work [^String str]
   (-> str
       st/lower-case
       replacing-first
       up-vols
-      replacing-second
-      spacing))
-
-;; TODO: поддержка \: для длинных звуков
+      #_replacing-second
+      #_spacing))
 
 
 ;; Преобразует строку в sstr, массив schar с мета данными типа, все позиции равны :s
-(defn str->bad-sstr [^String str]
-  (seq->sstr
-    (reduce (fn [coll a]
-              (let [f #(schar % :s)
-                    coll (if (char? coll)
-                           [(f coll)]
-                           coll)
-                    ]
-                (conj coll (f a))))
-            (seq (pre-work str)))))
+(defn str->bad-sstr
+  ([] nil)
+  ([^String str]
+   (if (if (not (char? str))
+         (empty? str))
+     []
+     (seq->sstr
+       (if (or (char? str)
+               (= 1 (count str)))
+         [(schar (if (char? str) str (first str)) nil)]
+         (reduce (fn [coll a]
+                   (let [f #(schar % nil)
+                         coll (if (char? coll)
+                                [(f coll)]
+                                coll)
+                         ]
+                     (conj coll (f a))))
+                 (seq (pre-work str)))))))
+
+  )
+
+
+(defn pose-gen [pose-fn]
+  (fn [sstr]
+    (seq->sstr
+      (loop [ps [(schar \space)]
+             ch (first sstr)
+             ft (conj (vec (rest sstr)) (schar \space))]
+        (if (nil? ch)
+          ps
+          (recur (conj ps (pose-fn ps ch ft))
+                 (first ft)
+                 (rest ft)))
+        )
+      )
+    )
+  )
 
 ;; Принимает массив предшествующих символов, символ schar, и массив следующих за ним символов
 ;; Возвращает необходимую позицию для данного символа
@@ -313,21 +368,7 @@
     :else (chpos ch :f)
     )
   )
-
-;; применяет enpos к каждому символу
-(defn enpose [sstr]
-  (seq->sstr
-    (loop [ps []
-           ch (first sstr)
-           ft (rest sstr)]
-      (if (nil? ch)
-        ps
-        (recur (conj ps (enpos ps ch ft))
-               (first ft)
-               (rest ft)))
-      )
-    )
-  )
+(def enpose (pose-gen enpos))
 
 ;; Принимает массив предшествующих символов, символ schar, и массив следующих за ним символов
 ;; Возвращает необходимую позицию для данного символа
@@ -355,6 +396,22 @@
     ;         (nil? (:pos (second ft))))
     ;     ) (chpos ch (:pos (first ft)))
 
+    (and (= :m (:pos ch))
+         (#{:e :s} (:pos (last ps)))
+         (#{:e :m} (:pos (first ft)))
+         (:pos ch)
+         ) (chpos ch :f)
+    (and (= :m (:pos ch))
+         (#{:e :s} (:pos (last ps)))
+         (or (#{:s} (:pos (first ft)))
+             (nil? (:pos (first ft))))
+         (:pos ch)
+         ) (chpos ch :s)
+    (and (= :e (:pos ch))
+         (or (#{:e :s} (:pos (last ps)))
+             (nil? (:pos (last ps))))
+         ) (chpos ch :s)
+
     (and (or (= \ь (:char (last ps)))
              (= \: (:char (last ps))))
          (:pos ch)
@@ -363,7 +420,9 @@
          ) (chpos ch (:pos (last ps)))
 
     (and (nil? (:pos (first ft)))
-         (= :m (:pos (last ps)))
+         (or
+           (= :f (:pos (last ps)))
+           (= :m (:pos (last ps))))
          ) (chpos ch :e)
 
     (and (or (= :f (:pos (last ps)))
@@ -382,39 +441,107 @@
     :else ch
     )
   )
+(def expose (pose-gen expos))
 
-;; Применяет expos к каждому символу
-(defn expose [sstr]
-  (seq->sstr
-    (loop [ps []
-           ch (first sstr)
-           ft (rest sstr)]
-      (if (nil? ch)
-        ps
-        (recur (conj ps (expos ps ch ft))
-               (first ft)
-               (rest ft)))
-      )
-    )
+(comment
+
+  [#"-" "-" " - "]                                          ; пробелы рядом с дефисом для обработки А как на концах слова
+  [#"\sА" "А" "а"]                                          ; А в начале слова, после пробела, меняем на аль
+  [#"А\s" "А" "а"]                                          ; Тоже в конце слова, меняем А на аль
+  [#"\sА\s" "А" "а"]                                        ; А как отдельное слово тоже на аль
+  [#"\s/А" "/" ""]                                          ; При экране / перед А в начале слова просто убираем экран, А остаётся А, на аль не меняем
+  [#"/а\s" "/а" "А"]                                        ; Меняем аль с экраном в конце слова на А, т.к. выше А заменилась на аль в конце слова
+  [#"\s/А\s" "/А" "А"]                                      ; А остаётся А при записи с экраном / в отдельной позиции
+  [#" - " " - " "-"]                                        ; Убираем пробелы слева и справа от дефиса
+  ;[#"\s-А" "-А" "-/а"] ; Пробел дефис А     -> экран / аль, чтобы её не съело в следующем
+  ;[#"\s-а" "-а" "-А"]  ; Пробел дефис аль   -> А
+  ;[#"\s-/а" "/а" "а"]  ; Убираем экран
+  [#"\s-/А" "/А" "а"]
+  [#"\S-а" "-а" "-/А"]                                      ; Непробел дефис аль -> экран / А
+  [#"\S-А" "-А" "-а"]                                       ; Непробел дефис А   -> аль
+  [#"\S-/А" "/А" "А"]                                       ; Убираем экран
+
   )
 
-;; Делает пост обработку по символам.
-(defn remex [sstr]
-  (seq->sstr
-    (map #(cond
-            (= \. (:char %)                                 ; Замена точки на другой символ
-               ) (schar (char 0x1CC3) nil)                  ; (char 0x166E) ᙮ / (char 0x1CC3) ᳃
-            :else %)
-         (filter (fn [ch] (not= \- (:char ch))) sstr))      ;; Убрать все вхождения символа \-
-    ))
+(defn dpos [ps ch ft]
+  (cond
+    (#{\-} (:char ch)
+     ) nil
+    :else ch
+    )
+  )
+(def dpose (pose-gen dpos))
+
+(defn apos [ps ch ft]
+  (cond
+    (and (#{\ь \:} (:char (first ft)))
+         (= :e (:pos (first ft)))
+         (not (#{:f :s} (:pos ch)))
+         ) (chpos ch :e)
+
+    (and (= \А (:char ch))
+         (or (and (= :f (:pos ch))
+                  (nil? (:pos (last ps)))
+                  (not (nil? (last ps))))
+             (and (= :e (:pos ch))
+                  (#{:e :s} (:pos (last ps)))
+                  (#{:f :s} (:pos (first ft)))))
+         (not= \/ (:char (last ps)))
+         ) (schar \а :s)
+
+    (and (= \А (:char ch))
+         (not= \/ (:char (last ps)))
+         (#{:m :f} (:pos (last ps)))
+         (or (#{:s :f} (:pos (first ft)))
+             (and (nil? (:pos (first ft)))
+                  (not (nil? (first ft)))))
+         ) (schar \а :e)
+
+    (#{\/} (:char ch)
+     ) nil
+
+    :else ch)
+  )
+(def apose (pose-gen apos))
+
+(defn ьpos [ps ch ft]
+  (cond
+
+    (#{\ь \:} (:char ch)
+     ) (chpos ch :s)
+
+    :else ch
+    )
+  )
+(def ьpose (pose-gen ьpos))
 
 ;; применяет последовательно enpose, expose и remex к sstr
 (defn pose [sstr]
-  ((comp remex expose enpose) sstr))
+  (let [ps (comp ьpose apose expose apose expose dpose expose enpose)
+        trim (fn [s]
+               (let [len (.size s)]
+                 (loop [rindex len]
+                   (if (zero? rindex)
+                     ""
+                     (if (Character/isWhitespace (:char (nth s (dec rindex))))
+                       (recur (dec rindex))
+                       ;; there is at least one non-whitespace char in the string,
+                       ;; so no need to check for lindex reaching len.
+                       (loop [lindex 0]
+                         (if (Character/isWhitespace (:char (nth s lindex)))
+                           (recur (inc lindex))
+                           (->> s (drop lindex) (take (i rindex - lindex)))))))))
+               )]
+    (-> (ps sstr) trim))
+  )
 
 ;; Преобразует базовую строку в sstr
-(defn str->sstr [str]
-  (seq->sstr (pose (str->bad-sstr str))))
+(defn str->sstr
+  ([] nil)
+  ([str]
+   (if (empty? str)
+     []
+     (seq->sstr (pose (str->bad-sstr str))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; PRINTES
@@ -475,6 +602,220 @@
   (binding [*print-end* true]
     (print x)))
 
+
+;;;;; TEST
+
+(defn sym-sstr
+  ([] '())
+  ([c p & more]
+   (seq->sstr
+     (conj (apply sym-sstr more) (schar c p))
+     ))
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; New methods                                                         ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn tr-word
+  "Преобразует строку одного слова без пробелов с поддержкой дефисов"
+
+  ([^String str]
+   (tr-word str true))
+  ([^String str first?]
+   {:pre [(not (st/includes? str " "))]}
+   (if first?
+
+     (let [str (pre-work str)
+           open-left? (st/starts-with? str "-")
+           open-right? (st/ends-with? str "-")
+           open (fn [sstr]
+                  (let [fir-rig (drop-while #(not (lits (:char %))) sstr)
+                        fir-lef (take-while #(not (lits (:char %))) sstr)
+                        fir-out (rest fir-rig)
+                        fir-one (first fir-rig)
+
+                        sec-lef (reverse (drop-while #(not (lits (:char %))) (reverse sstr)))
+                        sec-rig (reverse (take-while #(not (lits (:char %))) (reverse sstr)))
+                        sec-one (last sec-lef)
+
+                        mid-out (drop-last (+ 1 (count sec-rig))
+                                           fir-out)
+
+                        up-f (cond
+
+                               (not open-left?) fir-one
+
+                               (and open-left?
+                                    (= \а (:char fir-one))
+                                    (= :s (:pos fir-one))
+                                    (#{:f :s} (:pos (first mid-out))) ;; up-m :f to :m
+                                    ) (schar \А :m)         ;; -аз -аза обрабатывает в конечную часть
+                               ;; исправляя а-з а-за
+
+                               (and open-left?
+                                    (= :s (:pos fir-one))
+                                    ) (chpos fir-one :e)    ;; -т-ка
+
+                               (and open-left?
+                                    (= :f (:pos fir-one))
+                                    ) (chpos fir-one :m)
+
+                               :else (chpos fir-one nil)
+                               )
+
+                        up-m (cond
+                               (and open-left?
+                                    (= \а (:char fir-one))
+                                    (= :s (:pos fir-one))
+                                    (#{:f :s} (:pos (first mid-out)))
+                                    ) (seq->sstr
+                                        (flatten
+                                          (conj []
+                                                (chpos (first mid-out) (if (= :f (:pos (first mid-out))) :m :e))
+                                                (rest mid-out)
+                                                )))
+                               :else mid-out
+                               )
+                        up-s (cond
+
+                               (not open-right?) sec-one
+
+                               (and open-right?
+                                    (= \а (:char sec-one))
+                                    (#{:e :s} (:pos sec-one))
+                                    ) (schar \А (if (= :e (:pos sec-one)) :m :f))
+
+                               (and open-right?
+                                    (= :s (:pos sec-one))
+                                    ) (chpos sec-one :f)
+
+                               (and open-right?
+                                    (= :e (:pos sec-one))
+                                    ) (chpos sec-one :m)
+
+                               :else (chpos sec-one nil)
+                               )
+
+                        ]
+                    (seq->sstr
+
+                      (flatten
+                        (conj []
+                              fir-lef
+                              up-f
+                              up-m
+                              up-s
+                              sec-rig
+                              ))
+                      )
+                    )
+                  )                                         ;; BUG (tr "-м-")
+           ]
+       (seq->sstr
+         (open (apply conj []
+                      (flatten (map #(tr-word % false)
+                                    (st/split str #"-")))))))
+
+     (loop [ps []
+            ch (st-first str)
+            ft (st-rest str)]
+       (let [filt (fn [x] (filter #(if (instance? SChar %) (lits (:char %)) (lits %)) x))]
+         (cond
+
+           (nil? ch) ps
+
+           (and (empty? (filt ps))
+                (empty? (filt ft))
+                ) (recur (conj ps (schar ch :s))
+                         (st-first ft)
+                         (st-rest ft))
+
+           (and (= \а ch)
+                (or (empty? (filt ps))
+                    (#{:s :e} (:pos (last (filt ps)))))
+                ) (recur (if (= \/ (:char (last ps)))
+                           (conj (vec (butlast ps)) (schar \А :f))
+                           (conj ps (schar \а :s)))
+                         (st-first ft)
+                         (st-rest ft))
+
+           (and (lits ch)
+                (or (empty? (filt ps))
+                    (#{:s :e} (:pos (last (filt ps)))))
+                (not= \а ch)
+
+                ) (recur (conj ps (schar ch (if (empty? (filt ft)) :s :f)))
+                         (st-first ft)
+                         (st-rest ft))
+
+           (and (= \а ch)
+                (#{:f :m} (:pos (last (filt ps))))
+                (not (empty? (filt ft)))
+                ) (recur (if (= \/ (:char (last ps)))
+                           (conj (vec (butlast ps)) (schar \а :e))
+                           (conj ps (schar \А :m)))
+                         (st-first ft)
+                         (st-rest ft))
+
+           (and (lits ch)
+                (#{:f :m} (:pos (last (filt ps))))
+                (not (empty? (filt ft)))
+                ) (recur (conj ps (schar ch :m))
+                         (st-first ft)
+                         (st-rest ft))
+
+           (and (lits ch)
+                (not (empty? (filt ps)))
+                (empty? (filt ft))
+                ) (recur (if (and (= \а ch)
+                                  (= \/ (:char (last ps))))
+                           (conj (vec (butlast ps)) (schar \а :e))
+                           (conj ps (schar ch :e)))
+                         (st-first ft)
+                         (st-rest ft))
+
+           :else (recur (conj ps (schar ch))
+                        (st-first ft)
+                        (st-rest ft))
+           ))
+       )
+     ))
+  )
+
+(defn st-join                                               ;; ONLY SYMS IN STR!
+  ([coll]
+   (seq->sstr
+     (flatten
+       (apply conj [] coll)))
+   )
+  ([sep coll]
+   (seq->sstr
+     (flatten (let [sep (if (or (string? sep) (char? sep))
+                          (str->bad-sstr sep)
+                          sep)]
+                (if (= 1 (count coll))
+                  (first coll)
+                  (loop [ps (vector (first coll))
+                         ft (vec (next coll))]
+                    (if ft
+                      (recur (conj ps sep (first ft))
+                             (next ft)
+                             )
+                      ps)
+                    ))))))
+  )
+
+(defn tr-line [line]
+  (st-join " "
+           (map tr-word (st/split line #"\s"))))
+
+(defn tr [text]
+  (st-join "\n"
+           (map tr-line (st/split-lines text))))
+
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; BASES
 
@@ -484,8 +825,35 @@
 (def xxx (seq->sstr [x x y x y y]))
 
 (defn -main [& args]
+
   (doseq [arg args]
-    (let [sstr (str->sstr arg)]
-      (printe sstr)
-      (print sstr)))
+    (let [arg (if (nil? arg) "" arg)
+          c-flag (= \d (first arg))
+          sstr (if c-flag
+                 (estr->str (rest arg))
+                 (tr (if (char? arg) (str arg) arg)))]
+      (if (not c-flag)
+        (printe sstr))
+      (print sstr))
+    )
+  (loop []
+    (if-let [str-in (read-line)]
+      (do
+        (if (or (= ":exit" str-in)
+                (= ":q" str-in)
+                (= ":quit" str-in))
+          (System/exit 0)
+          )
+        (let [str-in (if (nil? str-in) "" str-in)
+              c-flag (= \d (first str-in))
+              sstr (if c-flag
+                     (estr->str (rest str-in))
+                     (str->sstr (if (char? str-in) (str str-in) str-in)))]
+          (if (not c-flag)
+            (printe sstr))
+          (print sstr)
+          (recur)))
+      (recur)))
   )
+
+
